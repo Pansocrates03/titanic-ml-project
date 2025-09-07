@@ -1,8 +1,22 @@
 import streamlit as st
 import joblib
 import numpy as np
+import os
+import pandas as pd
+import shap
+import pkg_resources
+import xgboost as xgb
 
+
+# -----------------------------
+# 1. Funciones auxiliares
+# -----------------------------
 def bootstrap_ci(model, X, n_bootstrap=1000, alpha=0.05):
+    """Calcula intervalos de confianza con bootstrap para predict_proba."""
+    if len(X) == 1:
+        prob = model.predict_proba(X)[0][1]
+        return [prob], [prob]
+
     preds = []
     n = len(X)
     for _ in range(n_bootstrap):
@@ -14,58 +28,105 @@ def bootstrap_ci(model, X, n_bootstrap=1000, alpha=0.05):
     upper = np.percentile(preds, 100 * (1 - alpha / 2), axis=0)
     return lower, upper
 
-@st.cache_resource
-def load_model():
-    return joblib.load("D:/GIT/titanic-ml-project/models/logistic_regression_final.pkl")
 
-logistic_regression_model = load_model()
+def load_model(model_name):
+    """Carga un modelo desde la carpeta models y obtiene las columnas esperadas."""
+    pages_dir = os.path.dirname(__file__)
+    dashboard_dir = os.path.dirname(pages_dir)
+    project_dir = os.path.dirname(dashboard_dir)
+    model_path = os.path.join(project_dir, "models", model_name)
+    model = joblib.load(model_path)
 
-input_type = {
-    "Age": float,
-    "SibSp": int,
-    "Parch": int,
-    "Fare": float,
-    "Sex_female": int,
-    "Sex_male": int,
-    "Embarked_C": int,
-    "Embarked_Q": int,
-    "Embarked_S": int,
-    "Pclass_1": int,
-    "Pclass_2": int,
-    "Pclass_3": int
+    # Intentar obtener las columnas usadas en entrenamiento
+    model_columns = getattr(model, "feature_names_in_", None)
+
+    # Si no existen, puedes definirlas manualmente según tu entrenamiento
+    if model_columns is None:
+        # Lista de las 30 columnas originales del Logistic Regression
+        model_columns = [
+            "Age","SibSp","Parch","FamilySize","IsAlone","FarePerPerson",
+            "Sex_female","Sex_male",
+            "Pclass_1","Pclass_2","Pclass_3",
+            "Title_Mr","Title_Mrs","Title_Miss","Title_Master","Title_Ms",
+            "Title_Dr","Title_Rev","Title_Col","Title_Major","Title_Capt",
+            "Title_Sir","Title_Lady","Title_Jonkheer","Title_Dona","Title_Countess",
+            "AgeGroup_Child","AgeGroup_Teen","AgeGroup_Adult","AgeGroup_Senior"
+        ]
+    return model, model_columns
+
+
+MODEL_FILES = {
+    "Logistic Regression": "logistic_regression_final.pkl",
+    "SVM": "svm_final.pkl",
+    "Random Forest": "random_forest_final.pkl",
+    "XGBoost": "xgboost_final.pkl",
 }
 
-def predict_survival(input_data):
-    final_fare = 32
-    if input_data["clase"] == "Primera":
-        final_fare = 52
-    elif input_data["clase"] == "Segunda":
-        final_fare = 12
-    elif input_data["clase"] == "Tercera":
-        final_fare = 8
+# -----------------------------
+# 2. Feature Engineering
+# -----------------------------
+def build_features(input_data):
+    """Construye features a partir del input del usuario"""
+    features = {}
 
-    from typing import Dict, Any
-    data: Dict[str, Any] = {
-        "Age": input_data["age"],
-        "SibSp": input_data["SibSp"],
-        "Parch": input_data["parch"],
-        "Fare": final_fare,
-        "Sex_female": 1 if input_data["sex"] == "Femenino" else 0,
-        "Sex_male": 1 if input_data["sex"] == "Masculino" else 0,
-        "Embarked_C": 0,
-        "Embarked_Q": 1,
-        "Embarked_S": 0,
-        "Pclass_1": 1 if input_data["clase"] == "Primera" else 0,
-        "Pclass_2": 1 if input_data["clase"] == "Segunda" else 0,
-        "Pclass_3": 1 if input_data["clase"] == "Tercera" else 0
-    }
-    features = np.array([list(data.values())])
-    prediction = logistic_regression_model.predict_proba(features)[0][1]
-    return prediction, data
+    # Datos básicos
+    features["Age"] = input_data.get("age", 30)
+    features["SibSp"] = input_data.get("SibSp", 0)
+    features["Parch"] = input_data.get("parch", 0)
+    features["FamilySize"] = features["SibSp"] + features["Parch"] + 1
+    features["IsAlone"] = 1 if features["FamilySize"] == 1 else 0
 
+    # Sexo
+    sex = input_data.get("sex", "Masculino")
+    features["Sex_female"] = 1 if sex=="Femenino" else 0
+    features["Sex_male"] = 1 if sex=="Masculino" else 0
+
+    # Clase
+    clase = input_data.get("clase", "Tercera")
+    features["Pclass_1"] = 1 if clase=="Primera" else 0
+    features["Pclass_2"] = 1 if clase=="Segunda" else 0
+    features["Pclass_3"] = 1 if clase=="Tercera" else 0
+
+    # Títulos
+    name = input_data.get("name","")
+    titles = ["Mr","Mrs","Miss","Master","Ms","Dr","Rev","Col","Major","Capt","Sir","Lady","Jonkheer","Dona","Countess"]
+    for title in titles:
+        features[f"Title_{title}"] = 1 if title in name else 0
+
+    # FarePerPerson (ejemplo simplificado)
+    fare_map = {"Primera": 52, "Segunda": 12, "Tercera": 8}
+    features["FarePerPerson"] = fare_map.get(clase, 8)
+
+    # Age bins
+    age = features["Age"]
+    features["AgeGroup_Child"] = 1 if age < 10 else 0
+    features["AgeGroup_Teen"] = 1 if 10 <= age < 18 else 0
+    features["AgeGroup_Adult"] = 1 if 18 <= age < 60 else 0
+    features["AgeGroup_Senior"] = 1 if age >= 60 else 0
+
+    return features
+
+
+def build_full_features(input_data, model_columns):
+    features = build_features(input_data)
+    df = pd.DataFrame([features])
+
+    # ⚡ Reindexar según columnas del modelo para evitar errores
+    df = df.reindex(columns=model_columns, fill_value=0)
+
+    return df
+
+
+# -----------------------------
+# 3. Streamlit App
+# -----------------------------
 st.title("🚢 Predicción de Supervivencia en el Titanic")
-st.write("¿Sobrevivirías al Titanic? Ingresa tus datos:")
 
+selected_model_name = st.selectbox("Selecciona el modelo:", list(MODEL_FILES.keys()))
+model, model_columns = load_model(MODEL_FILES[selected_model_name])
+st.success(f"✅ Modelo cargado: {selected_model_name}")
+
+st.write("### Ingresa los datos del pasajero:")
 inputData = {
     "name": st.text_input("Nombre", "John Doe"),
     "age": st.number_input("Edad", min_value=0, max_value=100, value=30),
@@ -75,22 +136,31 @@ inputData = {
     "sex": st.selectbox("Sexo", ["Masculino", "Femenino"])
 }
 
-if st.button("Predecir Supervivencia", key="predict_button"):
-    prob, data = predict_survival(inputData)
+if st.button("Predecir Supervivencia"):
+    X_user = build_full_features(inputData, model_columns=model_columns)
+
+    prob = model.predict_proba(X_user)[0][1]
     st.success(f"Probabilidad de supervivencia: {prob:.2%}")
 
-    # Calcular intervalo de confianza usando bootstrap con los datos del usuario
-    import pandas as pd
-    X_user = pd.DataFrame([data])
-    lower, upper = bootstrap_ci(logistic_regression_model, X_user)
+    lower, upper = bootstrap_ci(model, X_user)
     st.subheader("Intervalos de confianza")
-    st.write(f"Intervalo de confianza del 95%: [{lower[0]:.2%}, {upper[0]:.2%}]")
+    st.write(f"95% CI: [{lower[0]:.2%}, {upper[0]:.2%}]")
+
+    # SHAP
+    st.subheader("Explicación de la predicción (SHAP)")
+    try:
+        if "XGB" in selected_model_name or "Random Forest" in selected_model_name:
+            explainer = shap.TreeExplainer(model)
+        else:
+            explainer = shap.LinearExplainer(model, X_user, feature_dependence="independent")
+
+        shap_values = explainer.shap_values(X_user)
+        shap.initjs()
+        shap.force_plot(explainer.expected_value, shap_values[0], X_user.iloc[0,:], matplotlib=True, show=False)
+        st.pyplot(bbox_inches='tight', dpi=150, pad_inches=0.1)
+    except Exception as e:
+        st.warning(f"No se pudo generar SHAP: {e}")
+
 else:
     st.subheader("Intervalos de confianza")
-    st.write("Ingresar datos y hacer clic en 'Predecir Supervivencia' para ver los intervalos de confianza.")
-
-# ========================
-# 4. Explicaciones adicionales
-# ========================
-st.subheader("Explicación de la predicción (SHAP/LIME)")
-st.info("La predicción que realiza tu aplicación depende de tres factores principales: el sexo, la edad y la clase en la que viajaba la persona. Estos factores influyen en la probabilidad de supervivencia según el modelo entrenado. La combinación de estos factores influye en la predicción porque, históricamente, ciertos grupos (como mujeres, niños o pasajeros de primera clase) tenían mayor probabilidad de sobrevivir.")
+    st.write("👉 Ingresa datos y haz clic en 'Predecir Supervivencia'.")
