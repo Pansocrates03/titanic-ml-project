@@ -1,3 +1,4 @@
+from matplotlib import pyplot as plt
 import streamlit as st
 import joblib
 import numpy as np
@@ -120,6 +121,7 @@ def build_full_features(input_data, model_columns):
 # -----------------------------
 # 3. Streamlit App
 # -----------------------------
+st.set_page_config()
 st.title("🚢 Predicción de Supervivencia en el Titanic")
 
 selected_model_name = st.selectbox("Selecciona el modelo:", list(MODEL_FILES.keys()))
@@ -142,22 +144,43 @@ if st.button("Predecir Supervivencia"):
     prob = model.predict_proba(X_user)[0][1]
     st.success(f"Probabilidad de supervivencia: {prob:.2%}")
 
-    lower, upper = bootstrap_ci(model, X_user)
-    st.subheader("Intervalos de confianza")
-    st.write(f"95% CI: [{lower[0]:.2%}, {upper[0]:.2%}]")
+    try:
+        lower, upper = bootstrap_ci(model, X_user)
+        st.subheader("Intervalos de confianza")
+        st.write(f"95% CI: [{lower[0]:.2%}, {upper[0]:.2%}]")
+    except Exception as e:
+        st.warning(f"No se pudo calcular el intervalo de confianza: {e}")
 
     # SHAP
     st.subheader("Explicación de la predicción (SHAP)")
     try:
+        # Crea el explainer y los shap_values como ya lo haces
         if "XGB" in selected_model_name or "Random Forest" in selected_model_name:
             explainer = shap.TreeExplainer(model)
         else:
-            explainer = shap.LinearExplainer(model, X_user, feature_dependence="independent")
+            explainer = shap.LinearExplainer(model, X_user, feature_perturbation="interventional")
 
         shap_values = explainer.shap_values(X_user)
         shap.initjs()
+
+        # 1. Generar el force_plot
         shap.force_plot(explainer.expected_value, shap_values[0], X_user.iloc[0,:], matplotlib=True, show=False)
         st.pyplot(bbox_inches='tight', dpi=150, pad_inches=0.1)
+        
+        # 2. Generar el summary_plot
+        # Cierra la figura anterior para evitar que se mezclen los gráficos
+        plt.clf() 
+        plt.cla()
+        plt.close('all')
+
+        # Llama a shap.summary_plot y dile que dibuje en los ejes `ax`
+        # El argumento `show=False` evita que matplotlib muestre el gráfico directamente
+        # Nota: He eliminado el argumento `ax=ax` para compatibilidad con versiones antiguas
+        shap.summary_plot(shap_values, X_user, plot_type="bar", show=False)
+
+        # st.pyplot() ya usa la figura actual, pero es bueno ser explícito
+        st.pyplot()
+
     except Exception as e:
         st.warning(f"No se pudo generar SHAP: {e}")
 
