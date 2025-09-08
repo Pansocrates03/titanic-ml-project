@@ -14,7 +14,7 @@ def show_tablaResumen():
         print(f)
 
     try:
-        df = pd.read_csv('../data/processed/titanic_dataset_features.csv')
+        df = pd.read_csv('data/processed/titanic_dataset_features.csv')
     except FileNotFoundError:
         st.error("El archivo 'titanic_dataset_features.csv' no se encontró en la ruta 'data/processed/'.")
         return
@@ -34,7 +34,7 @@ def show_correlacionDeSupervivenciaInteractiva(group_by_column = 'Pclass'):
     title = f'Tasa de Supervivencia por {group_by_column}'
 
     # Visualizacion 1
-    df = pd.read_csv('../data/processed/titanic_dataset_features.csv')
+    df = pd.read_csv('data/processed/titanic_dataset_features.csv')
 
     # Calcular la tasa de supervivencia por clase y sexo
     survival_rate = df.groupby([group_by_column])

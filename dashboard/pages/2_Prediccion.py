@@ -5,48 +5,68 @@ import numpy as np
 import os
 import pandas as pd
 import shap
-import pkg_resources
 import xgboost as xgb
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 
-
-# -----------------------------
 # 1. Funciones auxiliares
-# -----------------------------
+
 def bootstrap_ci(model, X, n_bootstrap=1000, alpha=0.05):
-    """Calcula intervalos de confianza con bootstrap para predict_proba."""
+    """
+    Calculamos los intervalos de confianza (CI) para la probabilidad de supervivencia
+    usando el método bootstrap.
+    
+    - model: modelo entrenado (requerimos de predict_proba)
+    - X: es el dataframe con los features de entrada (30 columnas)
+    - n_bootstrap: número de muestras bootstrap
+    - alpha: nivel de significancia (0.05 => 95% CI)
+    
+    Regresa:
+    - lower, upper: límites inferior y superior del intervalo
+    """
+    # Caso especial: si solo hay 1 muestra
     if len(X) == 1:
-        prob = model.predict_proba(X)[0][1]
+        prob = model.predict_proba(X)[0][1]  # probabilidad de clase 1
         return [prob], [prob]
 
+    # Caso general: bootstrap con múltiples muestras
     preds = []
     n = len(X)
     for _ in range(n_bootstrap):
+        # Selecciona indices aleatorios con reemplazo
         sample_idx = np.random.choice(range(n), size=n, replace=True)
         X_boot = X.iloc[sample_idx]
-        preds.append(model.predict_proba(X_boot)[:, 1])
+        preds.append(model.predict_proba(X_boot)[:, 1])  # probabilidad clase 1
+    
     preds = np.array(preds)
+    # Calculamos percentiles para el intervalo de confianza
     lower = np.percentile(preds, 100 * alpha / 2, axis=0)
     upper = np.percentile(preds, 100 * (1 - alpha / 2), axis=0)
     return lower, upper
 
 
 def load_model(model_name):
-    """Carga un modelo desde la carpeta models y obtiene las columnas esperadas."""
+    """
+    Cargamos un modelo entrenado desde la carpeta "models" y obtenemos
+    las columnas esperadas durante el entrenamiento.
+    
+    - model_name: nombre del archivo .pkl del modelo
+    """
+    # Construimos rutas de manera relativa
     pages_dir = os.path.dirname(__file__)
     dashboard_dir = os.path.dirname(pages_dir)
     project_dir = os.path.dirname(dashboard_dir)
     model_path = os.path.join(project_dir, "models", model_name)
+    
+    # Cargamos el modelo serializado
     model = joblib.load(model_path)
 
-    # Intentar obtener las columnas usadas en entrenamiento
+    # Intentamos obtener las columnas usadas en el entrenamiento
     model_columns = getattr(model, "feature_names_in_", None)
 
-    # Si no existen, puedes definirlas manualmente según tu entrenamiento
+    # Si no existen, las definimos manualmente (lista de 30 columnas)
     if model_columns is None:
-        # Lista de las 30 columnas originales del Logistic Regression
         model_columns = [
             "Age","SibSp","Parch","FamilySize","IsAlone","FarePerPerson",
             "Sex_female","Sex_male",
@@ -59,6 +79,7 @@ def load_model(model_name):
     return model, model_columns
 
 
+# Diccionario de archivos de modelos
 MODEL_FILES = {
     "Logistic Regression": "logistic_regression_final.pkl",
     "SVM": "svm_final.pkl",
@@ -66,13 +87,15 @@ MODEL_FILES = {
     "XGBoost": "xgboost_final.pkl",
 }
 
-# -----------------------------
-# 2. Feature Engineering
-# -----------------------------
-def build_features(input_data):
-    """Construye features a partir del input del usuario"""
-    features = {}
 
+# 2. Feature Engineering
+
+def build_features(input_data):
+    """
+    Construimos el diccionario de features a partir de los datos ingresados
+    por el usuario en la interfaz de Streamlit.
+    """
+    features = {}
     # Datos básicos
     features["Age"] = input_data.get("age", 30)
     features["SibSp"] = input_data.get("SibSp", 0)
@@ -91,17 +114,17 @@ def build_features(input_data):
     features["Pclass_2"] = 1 if clase=="Segunda" else 0
     features["Pclass_3"] = 1 if clase=="Tercera" else 0
 
-    # Títulos
+    # Títulos en el nombre
     name = input_data.get("name","")
     titles = ["Mr","Mrs","Miss","Master","Ms","Dr","Rev","Col","Major","Capt","Sir","Lady","Jonkheer","Dona","Countess"]
     for title in titles:
         features[f"Title_{title}"] = 1 if title in name else 0
 
-    # FarePerPerson (ejemplo simplificado)
+    # Tarifa promedio por persona según clase
     fare_map = {"Primera": 52, "Segunda": 12, "Tercera": 8}
     features["FarePerPerson"] = fare_map.get(clase, 8)
 
-    # Age bins
+    # Rango de edad
     age = features["Age"]
     features["AgeGroup_Child"] = 1 if age < 10 else 0
     features["AgeGroup_Teen"] = 1 if 10 <= age < 18 else 0
@@ -112,25 +135,27 @@ def build_features(input_data):
 
 
 def build_full_features(input_data, model_columns):
+    """
+    Construimos un dataframe con todas las columnas requeridas por el modelo,
+    rellenando con 0 cualquier columna faltante.
+    """
     features = build_features(input_data)
     df = pd.DataFrame([features])
-
-    # Reindexar según columnas del modelo para evitar errores
     df = df.reindex(columns=model_columns, fill_value=0)
-
     return df
 
 
-# -----------------------------
+
 # 3. Streamlit App
-# -----------------------------
-st.set_page_config()
+st.set_page_config(page_title="Predicción Titanic")
 st.title("🚢 Predicción de Supervivencia en el Titanic")
 
+# Selector de modelo
 selected_model_name = st.selectbox("Selecciona el modelo:", list(MODEL_FILES.keys()))
 model, model_columns = load_model(MODEL_FILES[selected_model_name])
 st.success(f"✅ Modelo cargado: {selected_model_name}")
 
+# Inputs del usuario
 st.write("### Ingresa los datos del pasajero:")
 inputData = {
     "name": st.text_input("Nombre", "John Doe"),
@@ -142,11 +167,14 @@ inputData = {
 }
 
 if st.button("Predecir Supervivencia"):
-    X_user = build_full_features(inputData, model_columns=model_columns)
 
+    
+    # Construimos las features y realizamos la predicción
+    X_user = build_full_features(inputData, model_columns=model_columns)
     prob = model.predict_proba(X_user)[0][1]
     st.success(f"Probabilidad de supervivencia: {prob:.2%}")
 
+    # Intervalos de confianza
     try:
         lower, upper = bootstrap_ci(model, X_user)
         st.subheader("Intervalos de confianza")
@@ -154,103 +182,96 @@ if st.button("Predecir Supervivencia"):
     except Exception as e:
         st.warning(f"No se pudo calcular el intervalo de confianza: {e}")
 
+
     # SHAP
     st.subheader("Explicación de la predicción (SHAP)")
+
     try:
-        # Elige el explainer y calcula los valores SHAP
-        if isinstance(model, (xgb.XGBClassifier, RandomForestClassifier)):
-            explainer = shap.TreeExplainer(model)
-            shap_values = explainer.shap_values(X_user)
-            
-            # Para modelos de árbol, shap_values puede ser una lista o array
-            if isinstance(shap_values, list):
-                # Para clasificación binaria, tomar la clase positiva (índice 1)
-                positive_class_shap_values = shap_values[1]
-                base_value = explainer.expected_value[1]
+        # Archivo de fondo (background) para SHAP
+        pages_dir = os.path.dirname(__file__)
+        project_dir = os.path.dirname(os.path.dirname(pages_dir))
+        background_csv = os.path.join(project_dir, "data", "processed", "titanic_dataset_features.csv")
+
+        if os.path.exists(background_csv):
+            bg_df = pd.read_csv(background_csv)
+            bg_df = bg_df.reindex(columns=model_columns, fill_value=0)
+            bg_sample = bg_df.sample(n=min(100, len(bg_df)), random_state=42)  # Subsample para SHAP
+        else:
+            bg_sample = pd.DataFrame([np.zeros(len(model_columns))], columns=model_columns)
+
+        X_user_1 = X_user.iloc[0:1]  # Solo 1 muestra para force plot
+
+        # ---------------------
+        # Diferente explainer dependiendo del tipo de modelo
+        if isinstance(model, SVC):
+            explainer = shap.KernelExplainer(model.predict_proba, bg_sample)
+            shap_values_list = explainer.shap_values(X_user_1, nsamples=100)
+            if isinstance(shap_values_list, list) and len(shap_values_list) > 1:
+                shap_array = shap_values_list[1].reshape(-1)  # Clase positiva
+                base_plot = explainer.expected_value[1]
             else:
-                # Si es un array 2D, tomar la segunda columna (clase positiva)
-                if len(shap_values.shape) > 1 and shap_values.shape[1] > 1:
-                    positive_class_shap_values = shap_values[:, 1]
-                    base_value = explainer.expected_value[1] if isinstance(explainer.expected_value, np.ndarray) else explainer.expected_value
-                else:
-                    positive_class_shap_values = shap_values
-                    base_value = explainer.expected_value
-                    
+                shap_array = np.array(shap_values_list).reshape(-1)
+                base_plot = explainer.expected_value if isinstance(explainer.expected_value, (int, float)) else explainer.expected_value[0]
+
         elif isinstance(model, LogisticRegression):
-            explainer = shap.LinearExplainer(model, X_user, feature_perturbation="interventional")
-            shap_values = explainer.shap_values(X_user)
-            positive_class_shap_values = shap_values
-            base_value = explainer.expected_value
-            
-        elif isinstance(model, SVC):
-            # Usar KernelExplainer para SVM
-            explainer = shap.KernelExplainer(model.predict_proba, X_user)
-            shap_values = explainer.shap_values(X_user)
-            
-            if isinstance(shap_values, list):
-                positive_class_shap_values = shap_values[1]
-                base_value = explainer.expected_value[1]
+            explainer = shap.LinearExplainer(model, bg_sample, feature_perturbation="interventional")
+            shap_values = explainer.shap_values(X_user_1)
+            shap_array = np.array(shap_values).reshape(-1)
+            base_plot = explainer.expected_value
+
+        else:  # Random Forest / XGBoost
+            explainer = shap.Explainer(model, bg_sample)
+            explanation = explainer(X_user_1)
+            vals = explanation.values
+
+            # Multi-clase
+            if vals.ndim == 3:
+                if vals.shape[1] > 1:
+                    shap_array = vals[0, 1, :]
+                    base_plot = explanation.base_values[0, 1]
+                else:
+                    shap_array = vals[0, 0, :]
+                    base_plot = explanation.base_values[0, 0]
+            elif vals.ndim == 2:
+                shap_array = vals[0, :]
+                base_plot = explanation.base_values[0] if hasattr(explanation.base_values, "__len__") else explanation.base_values
             else:
-                positive_class_shap_values = shap_values[:, 1]
-                base_value = explainer.expected_value[1]
-        else:
-            raise ValueError("Tipo de modelo no soportado para SHAP.")
+                shap_array = vals.flatten()
+                base_plot = float(explanation.base_values)
 
+        # ---------------------
+        # Alineamos las dimensiones por si hay desalineación
+        if shap_array.shape[0] != X_user_1.shape[1]:
+            min_len = min(shap_array.shape[0], X_user_1.shape[1])
+            shap_array = shap_array[:min_len]
+            X_user_1 = X_user_1.iloc[:, :min_len]
+
+        # ---------------------
+        # Force plot de SHAP
         shap.initjs()
-
-        # 1. Generar el force_plot con la sintaxis corregida
-        fig_force = plt.figure(figsize=(12, 4))
-        
-        # Asegurar que tenemos los valores correctos
-        if isinstance(positive_class_shap_values, np.ndarray) and len(positive_class_shap_values.shape) > 1:
-            shap_vals_for_plot = positive_class_shap_values[0, :]
-        else:
-            shap_vals_for_plot = positive_class_shap_values[0] if len(positive_class_shap_values) > 0 else positive_class_shap_values
-        
-        # Sintaxis corregida para SHAP v0.20+
-        shap.plots.force(
-            base_value,
-            shap_vals_for_plot,
-            X_user.iloc[0, :],
-            matplotlib=True,
-            show=False
-        )
-        st.pyplot(fig_force, bbox_inches='tight', dpi=150, pad_inches=0.1)
+        fig_force = plt.figure(figsize=(12,4))
+        shap.plots.force(base_plot, shap_array, X_user_1.iloc[0,:], matplotlib=True, show=False)
+        st.pyplot(fig_force)
         plt.close(fig_force)
-        
-        # 2. Generar el summary_plot (bar plot)
-        fig_summary = plt.figure(figsize=(10, 6))
-        shap.summary_plot(
-            positive_class_shap_values,
-            X_user,
-            plot_type="bar",
-            show=False,
-            max_display=10  # Mostrar solo las 10 características más importantes
-        )
+
+        # Summary plot (Importancia de features)
+        fig_summary = plt.figure(figsize=(10,6))
+        shap.summary_plot(shap_array.reshape(1,-1), X_user_1, plot_type="bar", show=False, max_display=10)
         st.pyplot(fig_summary)
         plt.close(fig_summary)
 
-        # 3. Tabla con valores SHAP para referencia
-        st.subheader("Contribuciones de las características")
-        if isinstance(positive_class_shap_values, np.ndarray) and len(positive_class_shap_values.shape) > 1:
-            shap_vals = positive_class_shap_values[0, :]
-        else:
-            shap_vals = positive_class_shap_values[0] if len(positive_class_shap_values) > 0 else positive_class_shap_values
-            
+        # ---------------------
+        # Tabla con top 10 features y contribución SHAP
         feature_importance = pd.DataFrame({
-            'Característica': X_user.columns,
-            'Valor': X_user.iloc[0].values,
-            'Contribución SHAP': shap_vals
+            "Característica": X_user_1.columns,
+            "Valor": X_user_1.iloc[0].values,
+            "Contribución SHAP": shap_array
         })
         feature_importance = feature_importance.reindex(
-            feature_importance['Contribución SHAP'].abs().sort_values(ascending=False).index
+            feature_importance["Contribución SHAP"].abs().sort_values(ascending=False).index
         )
         st.dataframe(feature_importance.head(10))
 
     except Exception as e:
         st.warning(f"No se pudo generar SHAP: {e}")
         st.error(f"Detalles del error: {str(e)}")
-
-else:
-    st.subheader("Intervalos de confianza")
-    st.write("👉 Ingresa datos y haz clic en 'Predecir Supervivencia'.")
