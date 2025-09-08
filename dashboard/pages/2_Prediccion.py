@@ -7,6 +7,9 @@ import pandas as pd
 import shap
 import pkg_resources
 import xgboost as xgb
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
 
 
 # -----------------------------
@@ -112,7 +115,7 @@ def build_full_features(input_data, model_columns):
     features = build_features(input_data)
     df = pd.DataFrame([features])
 
-    # ⚡ Reindexar según columnas del modelo para evitar errores
+    # Reindexar según columnas del modelo para evitar errores
     df = df.reindex(columns=model_columns, fill_value=0)
 
     return df
@@ -154,35 +157,99 @@ if st.button("Predecir Supervivencia"):
     # SHAP
     st.subheader("Explicación de la predicción (SHAP)")
     try:
-        # Crea el explainer y los shap_values como ya lo haces
-        if "XGB" in selected_model_name or "Random Forest" in selected_model_name:
+        # Elige el explainer y calcula los valores SHAP
+        if isinstance(model, (xgb.XGBClassifier, RandomForestClassifier)):
             explainer = shap.TreeExplainer(model)
-        else:
+            shap_values = explainer.shap_values(X_user)
+            
+            # Para modelos de árbol, shap_values puede ser una lista o array
+            if isinstance(shap_values, list):
+                # Para clasificación binaria, tomar la clase positiva (índice 1)
+                positive_class_shap_values = shap_values[1]
+                base_value = explainer.expected_value[1]
+            else:
+                # Si es un array 2D, tomar la segunda columna (clase positiva)
+                if len(shap_values.shape) > 1 and shap_values.shape[1] > 1:
+                    positive_class_shap_values = shap_values[:, 1]
+                    base_value = explainer.expected_value[1] if isinstance(explainer.expected_value, np.ndarray) else explainer.expected_value
+                else:
+                    positive_class_shap_values = shap_values
+                    base_value = explainer.expected_value
+                    
+        elif isinstance(model, LogisticRegression):
             explainer = shap.LinearExplainer(model, X_user, feature_perturbation="interventional")
+            shap_values = explainer.shap_values(X_user)
+            positive_class_shap_values = shap_values
+            base_value = explainer.expected_value
+            
+        elif isinstance(model, SVC):
+            # Usar KernelExplainer para SVM
+            explainer = shap.KernelExplainer(model.predict_proba, X_user)
+            shap_values = explainer.shap_values(X_user)
+            
+            if isinstance(shap_values, list):
+                positive_class_shap_values = shap_values[1]
+                base_value = explainer.expected_value[1]
+            else:
+                positive_class_shap_values = shap_values[:, 1]
+                base_value = explainer.expected_value[1]
+        else:
+            raise ValueError("Tipo de modelo no soportado para SHAP.")
 
-        shap_values = explainer.shap_values(X_user)
         shap.initjs()
 
-        # 1. Generar el force_plot
-        shap.force_plot(explainer.expected_value, shap_values[0], X_user.iloc[0,:], matplotlib=True, show=False)
-        st.pyplot(bbox_inches='tight', dpi=150, pad_inches=0.1)
+        # 1. Generar el force_plot con la sintaxis corregida
+        fig_force = plt.figure(figsize=(12, 4))
         
-        # 2. Generar el summary_plot
-        # Cierra la figura anterior para evitar que se mezclen los gráficos
-        plt.clf() 
-        plt.cla()
-        plt.close('all')
+        # Asegurar que tenemos los valores correctos
+        if isinstance(positive_class_shap_values, np.ndarray) and len(positive_class_shap_values.shape) > 1:
+            shap_vals_for_plot = positive_class_shap_values[0, :]
+        else:
+            shap_vals_for_plot = positive_class_shap_values[0] if len(positive_class_shap_values) > 0 else positive_class_shap_values
+        
+        # Sintaxis corregida para SHAP v0.20+
+        shap.plots.force(
+            base_value,
+            shap_vals_for_plot,
+            X_user.iloc[0, :],
+            matplotlib=True,
+            show=False
+        )
+        st.pyplot(fig_force, bbox_inches='tight', dpi=150, pad_inches=0.1)
+        plt.close(fig_force)
+        
+        # 2. Generar el summary_plot (bar plot)
+        fig_summary = plt.figure(figsize=(10, 6))
+        shap.summary_plot(
+            positive_class_shap_values,
+            X_user,
+            plot_type="bar",
+            show=False,
+            max_display=10  # Mostrar solo las 10 características más importantes
+        )
+        st.pyplot(fig_summary)
+        plt.close(fig_summary)
 
-        # Llama a shap.summary_plot y dile que dibuje en los ejes `ax`
-        # El argumento `show=False` evita que matplotlib muestre el gráfico directamente
-        # Nota: He eliminado el argumento `ax=ax` para compatibilidad con versiones antiguas
-        shap.summary_plot(shap_values, X_user, plot_type="bar", show=False)
-
-        # st.pyplot() ya usa la figura actual, pero es bueno ser explícito
-        st.pyplot()
+        # 3. Tabla con valores SHAP para referencia
+        st.subheader("Contribuciones de las características")
+        if isinstance(positive_class_shap_values, np.ndarray) and len(positive_class_shap_values.shape) > 1:
+            shap_vals = positive_class_shap_values[0, :]
+        else:
+            shap_vals = positive_class_shap_values[0] if len(positive_class_shap_values) > 0 else positive_class_shap_values
+            
+        feature_importance = pd.DataFrame({
+            'Característica': X_user.columns,
+            'Valor': X_user.iloc[0].values,
+            'Contribución SHAP': shap_vals
+        })
+        feature_importance = feature_importance.reindex(
+            feature_importance['Contribución SHAP'].abs().sort_values(ascending=False).index
+        )
+        st.dataframe(feature_importance.head(10))
 
     except Exception as e:
         st.warning(f"No se pudo generar SHAP: {e}")
+        st.error(f"Detalles del error: {str(e)}")
 
 else:
     st.subheader("Intervalos de confianza")
